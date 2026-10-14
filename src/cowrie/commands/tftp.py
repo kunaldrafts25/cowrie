@@ -138,9 +138,16 @@ class TFTPClient(DatagramProtocol):
             self.deferred.errback(e)
 
     def stopProtocol(self) -> None:
-        """Called when protocol stops"""
+        """Cancel pending work and close an interrupted transfer's artifact."""
         if self.timeout_call is not None and self.timeout_call.active():
             self.timeout_call.cancel()
+        if not self.deferred.called:
+            # Shutdown may already have torn down the terminal and cmdstack.
+            # Close directly instead of firing callbacks into a dead session.
+            try:
+                self.artifact.close()
+            except OSError:
+                self._log.failure("TFTP: could not close interrupted artifact")
 
     def sendRRQ(self) -> None:
         """Send Read ReQuest packet"""
