@@ -117,12 +117,24 @@ class LibvirtBackendService:
         if not self.ready:
             return None
 
+        # Imported only when the optional libvirt backend is used.
+        import libvirt
+
         # create a single guest
         guest_unique_id = uuid.uuid4().hex
         guest_mac, guest_ip = self.get_mac_ip(ip_tester)
-        dom, snapshot = backend_pool.libvirt.guest_handler.create_guest(
-            self.conn, guest_mac, guest_unique_id
-        )
+        try:
+            dom, snapshot = backend_pool.libvirt.guest_handler.create_guest(
+                self.conn, guest_mac, guest_unique_id
+            )
+        except (
+            backend_pool.libvirt.guest_handler.QemuGuestError,
+            libvirt.libvirtError,
+        ):
+            self._log.failure(
+                "Failed to create guest; retrying on the next pool iteration"
+            )
+            return None
         if dom is None:
             self._log.error("Failed to create guest")
             return None

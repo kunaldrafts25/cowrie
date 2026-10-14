@@ -5,7 +5,6 @@
 from __future__ import annotations
 
 import os
-import sys
 from configparser import NoOptionError
 from typing import Any
 
@@ -91,9 +90,16 @@ def create_guest(
         dom = connection.createXML(guest_config, 0)
         if dom is None:
             _log.error("Failed to create a domain from an XML definition.")
-            sys.exit(1)
-    except libvirt.libvirtError:
+            raise QemuGuestError()  # noqa: TRY301 - share snapshot cleanup with libvirt failures
+    except (QemuGuestError, libvirt.libvirtError):
         _log.failure("Error booting guest")
+        # Failed attempts must not accumulate snapshots on every pool retry.
+        try:
+            os.remove(disk_img)
+        except FileNotFoundError:
+            pass
+        except OSError:
+            _log.failure("Could not remove failed guest snapshot")
         raise
     _log.info("Guest {name} has booted", name=dom.name())
     return dom, disk_img
