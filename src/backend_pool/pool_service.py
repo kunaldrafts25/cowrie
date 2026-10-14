@@ -29,6 +29,7 @@ from threading import Lock
 
 from twisted.internet import reactor, threads
 from twisted.logger import Logger
+from twisted.python.failure import Failure
 
 import backend_pool.libvirt.backend_service
 import backend_pool.util
@@ -100,6 +101,9 @@ class PoolService:
         # time in seconds between each loop iteration
         self.loop_sleep_time: int = 5
         self.loop_next_call = None
+        self._pool_running = False
+        self._pool_generation = 0
+        self._producer_inflight = False
 
         # default configs; custom values will come from the client
         # when they connect to the pool
@@ -146,8 +150,10 @@ class PoolService:
 
         self.any_vm_up = False  # TODO fix for no VM available
 
-        # start producer
-        threads.deferToThread(self.producer_loop)
+        # Start from the reactor; each iteration is dispatched to a worker.
+        self._pool_running = True
+        self._pool_generation += 1
+        self._run_producer(self._pool_generation)
 
         # recycle myself after some time
         recycle_period = CowrieConfig.getint(
@@ -163,9 +169,12 @@ class PoolService:
 
         self._log.info("Trying pool clean stop")
 
-        # stop loop
-        if self.loop_next_call:
+        # Invalidate pending/in-flight callbacks before tearing down the pool.
+        self._pool_running = False
+        self._pool_generation += 1
+        if self.loop_next_call is not None and self.loop_next_call.active():
             self.loop_next_call.cancel()
+        self.loop_next_call = None
 
         # try destroying all guests
         for guest in self.guests:
@@ -366,6 +375,32 @@ class PoolService:
             if self.guest_id == 252:
                 self.guest_id = 0
 
+    def _run_producer(self, generation: int) -> None:
+        if not self._pool_running or generation != self._pool_generation:
+            return
+        self.loop_next_call = None
+        if self._producer_inflight:
+            return
+        self._producer_inflight = True
+        # deferToThread delivers completion on the reactor thread, so timer
+        # scheduling never occurs in the blocking VM-management worker.
+        threads.deferToThread(self.producer_loop).addBoth(
+            self._producer_finished, generation
+        )
+
+    def _producer_finished(self, result: object, generation: int) -> None:
+        self._producer_inflight = False
+        if isinstance(result, Failure):
+            self._log.failure("Backend pool producer iteration failed", failure=result)
+        if not self._pool_running:
+            return
+        # A restart waits for the previous worker instead of overlapping VM
+        # operations. Its old generation must not rearm the previous schedule.
+        delay = self.loop_sleep_time if generation == self._pool_generation else 0
+        self.loop_next_call = reactor.callLater(
+            delay, self._run_producer, self._pool_generation
+        )
+
     def producer_loop(self) -> None:
         # delete old VMs, but do not let pool size be 0
         if self.existing_pool_size() > 1:
@@ -386,11 +421,6 @@ class PoolService:
 
         # check for created VMs that can become available
         self.__producer_mark_available()
-
-        # sleep until next iteration
-        self.loop_next_call = reactor.callLater(
-            self.loop_sleep_time, self.producer_loop
-        )
 
     # Consumers
     def __consumers_get_guest_ip(self, src_ip: str) -> Guest | None:
