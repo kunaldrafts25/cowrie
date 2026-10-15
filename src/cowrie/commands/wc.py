@@ -12,9 +12,9 @@ This module contains the wc commnad
 from __future__ import annotations
 
 import getopt
-import re
 
 from cowrie.shell.command import HoneyPotCommand
+from cowrie.shell.fs import FileNotFound
 
 commands = {}
 
@@ -64,64 +64,63 @@ class Command_wc(HoneyPotCommand):
         self.writeBytes(b"\t-h\tdisplay this help and exit\n")
         self.writeBytes(b"\t-v\toutput version information and exit\n")
 
-    def wc_get_contents(self, filename: str, optlist: list[tuple[str, str]]) -> None:
-        try:
-            contents = self.fs.file_contents(filename)
-            self.wc_application(contents, optlist)
-        except Exception:
-            self.errorWrite(f"wc: {filename}: No such file or directory\n")
-
     def wc_application(self, contents: bytes, optlist: list[tuple[str, str]]) -> None:
-        for opt, _arg in optlist:
-            if opt == "-l":
-                contentsplit = contents.split(b"\n")
-                self.write(f"{len(contentsplit) - 1}\n")
-            elif opt == "-w":
-                contentsplit = re.sub(b" +", b" ", contents.strip(b"\n").strip()).split(
-                    b" "
-                )
-                self.write(f"{len(contentsplit)}\n")
-            elif opt == "-m" or opt == "-c":
-                self.write(f"{len(contents)}\n")
-            elif opt == "-v":
-                self.version()
-            else:
-                self.help()
+        selected = {opt for opt, _ in optlist} or {"-l", "-w", "-c"}
+        values = {
+            "-l": contents.count(b"\n"),
+            "-w": len(contents.split()),
+            "-m": len(contents.decode("utf-8", errors="ignore")),
+            "-c": len(contents),
+            "-L": max(
+                (len(line.expandtabs(8)) for line in contents.splitlines()), default=0
+            ),
+        }
+        self.write(
+            " ".join(
+                str(values[opt])
+                for opt in ("-l", "-w", "-m", "-c", "-L")
+                if opt in selected
+            )
+            + "\n"
+        )
 
     def start(self) -> None:
-        if not self.args:
-            self.exit()
+        self._stdin = bytearray()
+        try:
+            self.optlist, args = getopt.getopt(self.args, "cmlLwhv")
+        except getopt.GetoptError as err:
+            self.errorWrite(f"wc: invalid option -- {err.opt}\n")
+            self.exit(1)
             return
-
-        optlist: list[tuple[str, str]] = []
-        args = self.args
-        if self.args[0] == ">":
-            pass
-        else:
-            try:
-                optlist, args = getopt.getopt(self.args, "cmlLwhv")
-            except getopt.GetoptError as err:
-                self.errorWrite(f"wc: invalid option -- {err.opt}\n")
+        for opt, _ in self.optlist:
+            if opt == "-v":
+                self.version()
+                self.exit()
+                return
+            if opt == "-h":
                 self.help()
                 self.exit()
                 return
-            for opt in optlist:
-                if opt[0] == "-v":
-                    self.version()
-                    self.exit()
-                    return
-                if opt[0] == "-h":
-                    self.help()
-                    self.exit()
-                    return
 
-        if not self.input_data:
-            files = self.check_arguments("wc", args[1:])
-            for pname in files:
-                self.wc_get_contents(pname, optlist)
+        if not args:
+            if self.input_data is None:
+                return
+            self.wc_application(self.input_data, self.optlist)
         else:
-            self.wc_application(self.input_data, optlist)
-
+            for arg in args:
+                if arg == "-":
+                    self.wc_application(self.input_data or b"", self.optlist)
+                    continue
+                path = self.fs.resolve_path(arg, self.cwd)
+                if self.fs.isdir(path):
+                    self.errorWrite(f"wc: {arg}: Is a directory\n")
+                    self.exit_code = 1
+                    continue
+                try:
+                    self.wc_application(self.fs.file_contents(path), self.optlist)
+                except FileNotFound:
+                    self.errorWrite(f"wc: {arg}: No such file or directory\n")
+                    self.exit_code = 1
         self.exit()
 
     def lineReceived(self, line: str) -> None:
@@ -131,8 +130,14 @@ class Command_wc(HoneyPotCommand):
             realm="wc",
             input=line,
         )
+        if not hasattr(self, "_stdin"):
+            self._stdin = bytearray()
+        self._stdin.extend(line.encode("utf-8"))
+        if not line.endswith("\n"):
+            self._stdin.extend(b"\n")
 
     def eofReceived(self) -> None:
+        self.wc_application(bytes(self._stdin), self.optlist)
         self.exit()
 
 
