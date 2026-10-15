@@ -73,16 +73,14 @@ class Command_tee(HoneyPotCommand):
                 continue
 
             try:
-                self.fs.mkfile(
-                    pname, self.user["uid"], self.user["gid"], 0, 0o644
-                )
+                self.fs.mkfile(pname, self.user["uid"], self.user["gid"], 0, 0o644)
             except FileNotFound:
                 self.errorWrite(f"tee: {arg}: No such file or directory\n")
                 self.exit_code = 1
             else:
                 self.teeFiles.append(pname)
 
-        if self.input_data:
+        if self.input_data is not None:
             self.output(self.input_data)
             self.exit()
 
@@ -95,18 +93,10 @@ class Command_tee(HoneyPotCommand):
         """
         This is the tee output, if no file supplied
         """
-        if inb:
-            # Piped input is attacker bytes and need not be valid UTF-8.
-            inp = inb.decode("utf-8", errors="replace")
-        else:
+        if inb is None:
             return
-
-        lines = inp.split("\n")
-        if lines[-1] == "":
-            lines.pop()
-        for line in lines:
-            self.write(line + "\n")
-            self.write_to_file(line.encode("utf-8") + b"\n")
+        self.writeBytes(inb)
+        self.write_to_file(inb)
 
     def lineReceived(self, line: str) -> None:
         """
@@ -119,7 +109,7 @@ class Command_tee(HoneyPotCommand):
             input=line,
         )
 
-        self.output(line.encode("utf-8"))
+        self.output(line.encode("utf-8") + (b"" if line.endswith("\n") else b"\n"))
 
     def handle_CTRL_C(self) -> None:
         if not self.ignoreInterupts:
