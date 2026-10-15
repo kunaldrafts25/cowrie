@@ -85,12 +85,12 @@ class Command_find(HoneyPotCommand):
         if depth > self.maxdepth:
             return
         try:
-            if not self.fs.exists(path):
+            if self.fs.getfile(path, follow_symlinks=False) is None:
                 return
             if self._match(path):
                 self.write(f"{path}\n")
 
-            if self.fs.isdir(path):
+            if not self.fs.islink(path) and self.fs.isdir(path):
                 for entry in self.fs.listdir(path):
                     if entry in (".", ".."):
                         continue
@@ -105,6 +105,8 @@ class Command_find(HoneyPotCommand):
         if self.name_pattern and not fnmatch.fnmatch(basename, self.name_pattern):
             return False
 
+        if self.type_filter and self.fs.islink(path):
+            return False
         if self.type_filter == "f" and not self.fs.isfile(path):
             return False
         if self.type_filter == "d" and not self.fs.isdir(path):
