@@ -26,65 +26,54 @@ class Command_dd(HoneyPotCommand):
     ddargs: dict[str, str]
 
     def start(self) -> None:
-        if not self.args or self.args[0] == ">":
-            return
-
         self.ddargs = {}
-
         for arg in self.args:
-            if arg.find("=") == -1:
-                self.write(f"unknown operand: {arg}")
+            if "=" not in arg:
+                self.errorWrite(f"dd: unknown operand: {arg}\n")
                 self._finish(success=False)
-            operand, value = arg.split("=")
+                return
+            operand, value = arg.split("=", 1)
             if operand not in ("if", "bs", "of", "count"):
-                self.write(f"unknown operand: {operand}")
+                self.errorWrite(f"dd: unknown operand: {operand}\n")
                 self._finish(success=False)
+                return
             self.ddargs[operand] = value
 
-        if self.input_data:
-            self.writeBytes(self.input_data)
+        block = parse_size(self.ddargs.get("bs", "512"))
+        if block <= 0:
+            self.errorWrite(f"dd: invalid number '{self.ddargs.get('bs')}'\n")
+            self._finish(success=False)
+            return
+        count = None
+        if "count" in self.ddargs:
+            try:
+                count = int(self.ddargs["count"])
+            except ValueError:
+                count = -1
+            if count < 0:
+                self.errorWrite(f"dd: invalid number '{self.ddargs['count']}'\n")
+                self._finish(success=False)
+                return
+
+        if "if" in self.ddargs:
+            iname = self.ddargs["if"]
+            pname = self.fs.resolve_path(iname, self.cwd)
+            if self.fs.isdir(pname):
+                self.errorWrite(f"dd: {iname}: Is a directory\n")
+                self._finish(success=False)
+                return
+            try:
+                data = self.fs.file_contents(pname)
+            except FileNotFound:
+                self.errorWrite(f"dd: {iname}: No such file or directory\n")
+                self._finish(success=False)
+                return
+        elif self.input_data is not None:
+            data = self.input_data
         else:
-            bSuccess = True
-            c = -1
-            block = 512
-            if "if" in self.ddargs:
-                iname = self.ddargs["if"]
-                pname = self.fs.resolve_path(iname, self.cwd)
-                if self.fs.isdir(pname):
-                    self.errorWrite(f"dd: {iname}: Is a directory\n")
-                    bSuccess = False
-
-                if bSuccess:
-                    if "bs" in self.ddargs:
-                        block = parse_size(self.ddargs["bs"])
-                        if block <= 0:
-                            self.errorWrite(f"dd: invalid number '{block}'\n")
-                            bSuccess = False
-
-                if bSuccess:
-                    if "count" in self.ddargs:
-                        c = int(self.ddargs["count"])
-                        if c < 0:
-                            self.errorWrite(f"dd: invalid number '{c}'\n")
-                            bSuccess = False
-
-                if bSuccess:
-                    try:
-                        contents = self.fs.file_contents(pname)
-                        if c == -1:
-                            self.writeBytes(contents)
-                        else:
-                            tsize = block * c
-                            data = contents
-                            if len(data) > tsize:
-                                self.writeBytes(data[:tsize])
-                            else:
-                                self.writeBytes(data)
-                    except FileNotFound:
-                        self.errorWrite(f"dd: {iname}: No such file or directory\n")
-                        bSuccess = False
-
-                self._finish(success=bSuccess)
+            return
+        self.writeBytes(data if count is None else data[: block * count])
+        self._finish()
 
     def _finish(self, success: bool = True) -> None:
         if success:
