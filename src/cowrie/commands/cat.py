@@ -82,14 +82,18 @@ class Command_cat(HoneyPotCommand):
         if inb is None:
             return
 
+        if not self.number:
+            self.writeBytes(inb)
+            return
         lines = inb.split(b"\n")
-        if lines[-1] == b"":
-            lines.pop()
-        for line in lines:
-            if self.number:
-                self.write(f"{self.linenumber:>6}  ")
-                self.linenumber = self.linenumber + 1
-            self.writeBytes(line + b"\n")
+        for index, line in enumerate(lines):
+            if index == len(lines) - 1 and not line:
+                break
+            self.write(f"{self.linenumber:>6}  ")
+            self.linenumber += 1
+            self.writeBytes(line)
+            if index < len(lines) - 1:
+                self.writeBytes(b"\n")
 
     def lineReceived(self, line: str) -> None:
         """
@@ -102,7 +106,7 @@ class Command_cat(HoneyPotCommand):
             input=line,
         )
 
-        self.output(line.encode("utf-8"))
+        self.output(line.encode("utf-8") + (b"" if line.endswith("\n") else b"\n"))
 
     def eofReceived(self) -> None:
         """
