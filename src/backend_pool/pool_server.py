@@ -16,15 +16,17 @@ import struct
 from typing import TYPE_CHECKING
 
 from twisted.internet.address import IPv4Address, IPv6Address
-from twisted.internet.protocol import Factory, Protocol
+from twisted.internet.protocol import Factory, Protocol, connectionDone
 from twisted.logger import Logger
 
 from backend_pool.nat import NATService
 from backend_pool.pool_service import NoAvailableVMs, PoolService
 from cowrie.core.config import CowrieConfig
+from cowrie.pool_interface.framing import request_size
 
 if TYPE_CHECKING:
     from twisted.internet.interfaces import IAddress
+    from twisted.python.failure import Failure
 
 RES_OP_I = b"i"
 RES_OP_R = b"r"
@@ -41,6 +43,8 @@ class PoolServer(Protocol):
 
     def __init__(self, factory: PoolServerFactory) -> None:
         self.factory: PoolServerFactory = factory
+        self._buffer = b""
+        self._stream_closed = False
         self.local_pool: bool = (
             CowrieConfig.get("proxy", "pool", fallback="local") == "local"
         )
@@ -54,6 +58,29 @@ class PoolServer(Protocol):
             self.nat_public_ip: str = CowrieConfig.get("backend_pool", "nat_public_ip")
 
     def dataReceived(self, data: bytes) -> None:
+        if self._stream_closed:
+            return
+        self._buffer += data
+        while self._buffer:
+            try:
+                size = request_size(self._buffer)
+            except ValueError:
+                self._log.warn("Unknown pool message opcode; closing connection")
+                self._buffer = b""
+                self._stream_closed = True
+                if self.transport is not None:
+                    self.transport.loseConnection()
+                return
+            if size is None or len(self._buffer) < size:
+                return
+            message, self._buffer = self._buffer[:size], self._buffer[size:]
+            self._messageReceived(message)
+
+    def connectionLost(self, reason: Failure = connectionDone) -> None:
+        self._buffer = b""
+        self._stream_closed = True
+
+    def _messageReceived(self, data: bytes) -> None:
         res_op: bytes = struct.unpack("!c", bytes([data[0]]))[
             0
         ]  # yes, this needs to be done to extract the op code correctly

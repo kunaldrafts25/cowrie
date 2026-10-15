@@ -6,11 +6,16 @@
 from __future__ import annotations
 
 import struct
+from typing import TYPE_CHECKING
 
-from twisted.internet.protocol import ClientFactory, Protocol
+from twisted.internet.protocol import ClientFactory, Protocol, connectionDone
 from twisted.logger import Logger
 
 from cowrie.core.config import CowrieConfig
+from cowrie.pool_interface.framing import response_size
+
+if TYPE_CHECKING:
+    from twisted.python.failure import Failure
 
 
 class PoolClient(Protocol):
@@ -22,6 +27,8 @@ class PoolClient(Protocol):
 
     def __init__(self, factory):
         self.factory = factory
+        self._buffer = b""
+        self._stream_closed = False
         self.parent = None
         self.vm_id = None  # used when disconnecting
 
@@ -59,7 +66,33 @@ class PoolClient(Protocol):
             buf = struct.pack("!cI", op_code, self.vm_id)
             self.transport.write(buf)
 
-    def dataReceived(self, data):
+    def dataReceived(self, data: bytes) -> None:
+        if self._stream_closed:
+            return
+        if not self.parent:
+            self._log.error("Parent not set, discarding data from pool")
+            return
+        self._buffer += data
+        while self._buffer:
+            try:
+                size = response_size(self._buffer)
+            except ValueError:
+                self._log.warn("Unknown pool message opcode; closing connection")
+                self._buffer = b""
+                self._stream_closed = True
+                if self.transport is not None:
+                    self.transport.loseConnection()
+                return
+            if size is None or len(self._buffer) < size:
+                return
+            message, self._buffer = self._buffer[:size], self._buffer[size:]
+            self._messageReceived(message)
+
+    def connectionLost(self, reason: Failure = connectionDone) -> None:
+        self._buffer = b""
+        self._stream_closed = True
+
+    def _messageReceived(self, data: bytes) -> None:
         # only makes sense to process data if we have a parent to send it to
         if not self.parent:
             self._log.error("Parent not set, discarding data from pool")
@@ -118,6 +151,10 @@ class PoolClient(Protocol):
             self.parent.received_pool_data(
                 res_op, res_code, honey_ip, snapshot, ssh_port, telnet_port
             )
+
+
+if TYPE_CHECKING:
+    from twisted.python.failure import Failure
 
 
 class PoolClientFactory(ClientFactory):
