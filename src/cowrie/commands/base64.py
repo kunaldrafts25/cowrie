@@ -29,6 +29,7 @@ class Command_base64(HoneyPotCommand):
     def start(self) -> None:
         self.mode = "e"
         self.ignore = False
+        self.wrap = 76
 
         try:
             optlist, args = getopt.getopt(
@@ -90,11 +91,15 @@ Written by Simon Josefsson.
             elif opt[0] == "-i" or opt[0] == "--ignore-garbage":
                 self.ignore = True
 
-            elif opt[0] == "-w" or opt[0] == "wrap":
-                pass
+            elif opt[0] in ("-w", "--wrap"):
+                if not opt[1].isascii() or not opt[1].isdigit():
+                    self.errorWrite(f"base64: invalid wrap size: {opt[1]}\n")
+                    self.exit(1)
+                    return
+                self.wrap = int(opt[1])
 
         if len(args) == 0:
-            if self.input_data:
+            if self.input_data is not None:
                 self.dojob(self.input_data)
             else:
                 return
@@ -133,8 +138,12 @@ Try 'base64 --help' for more information.
             )
 
         if self.mode == "e":
-            self.writeBytes(base64.b64encode(s))
-            self.writeBytes(b"\n")
+            encoded = base64.b64encode(s)
+            if self.wrap == 0:
+                self.writeBytes(encoded)
+            else:
+                for offset in range(0, len(encoded), self.wrap):
+                    self.writeBytes(encoded[offset : offset + self.wrap] + b"\n")
         else:
             # Like GNU base64 without -i, a byte outside the alphabet (other
             # than a line break) is an error, not something to skip.
