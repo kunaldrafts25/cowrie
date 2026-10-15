@@ -137,6 +137,7 @@ class Command_tr(HoneyPotCommand):
             set1 = bytes(c for c in range(256) if c not in set1)
         set2 = expand_set(args[1]) if len(args) > 1 else b""
 
+        self._last_output: int | None = None
         self.table: dict[int, int] = {}
         if not self.delete and set2:
             if truncate:
@@ -178,9 +179,10 @@ class Command_tr(HoneyPotCommand):
             if byte in self.deleted:
                 continue
             byte = self.table.get(byte, byte)
-            if out and byte == out[-1] and byte in self.squeezed:
+            if byte == self._last_output and byte in self.squeezed:
                 continue
             out.append(byte)
+            self._last_output = byte
         return bytes(out)
 
     def lineReceived(self, line: str) -> None:
