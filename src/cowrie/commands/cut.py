@@ -101,21 +101,28 @@ class Command_cut(HoneyPotCommand):
                 start_s, end_s = part.split("-", 1)
                 start = int(start_s) - 1 if start_s else 0
                 end: int | None = int(end_s) if end_s else None
+                if not start_s and not end_s:
+                    raise ValueError
+                if start < 0 or (end is not None and end <= start):
+                    raise ValueError
                 ranges.append((start, end))
             else:
                 idx = int(part) - 1
+                if idx < 0:
+                    raise ValueError
                 ranges.append((idx, idx + 1))
         return ranges
 
     def _select_fields(self, fields: list[str]) -> list[str]:
         """Select fields based on the parsed field specification."""
-        selected: list[str] = []
-        for start, end in self.field_indices:
-            if end is None:
-                selected.extend(fields[start:])
-            else:
-                selected.extend(fields[start:end])
-        return selected
+        return [
+            field
+            for index, field in enumerate(fields)
+            if any(
+                start <= index and (end is None or index < end)
+                for start, end in self.field_indices
+            )
+        ]
 
     def _process(self, data: bytes) -> None:
         lines = data.split(b"\n")
